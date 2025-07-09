@@ -1,0 +1,9 @@
+selenium
+webdriver-manager
+beautifulsoup4
+lxml
+python-pptx
+requests
+Pillow
+python-docx
+PyDrive
