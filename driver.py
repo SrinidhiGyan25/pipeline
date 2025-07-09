@@ -60,16 +60,16 @@ class ContentProcessor:
             return match.group(1).strip().upper() == 'Y' if match else False
         
         gpt_canvas = extract_flag(r'\*\*Gpt canvas\*\*.*?([YN])')
-        gpt_canvas_without_notes = extract_flag(r'\*\*Gpt canvas without.*?speaker notes\*\*.*?([YN])')
+        #gpt_canvas_without_notes = extract_flag(r'\*\*Gpt canvas without.*?speaker notes\*\*.*?([YN])')
         ppt_needs_images = extract_flag(r'\*\*Ppt needs images\*\*.*?([YN])')
         ppt_has_images = extract_flag(r'\*\*PPT has images\*\*.*?([YN])')
-        ppt_with_speaker_notes = extract_flag(r'\*\*Ppt with speaker notes\*\*.*?([YN])')
+        #ppt_with_speaker_notes = extract_flag(r'\*\*Ppt with speaker notes\*\*.*?([YN])')
         
         # Extract links
         canvas_link_match = re.search(r'https://chatgpt\.com/canvas/shared/[a-zA-Z0-9]+', content)
         canvas_link = canvas_link_match.group(0) if canvas_link_match else None
         
-        ppt_link_match = re.search(r'https://drive\.google\.com/.*?(?=\s|$)', content)
+        ppt_link_match = re.search(r'https://docs\.google\.com/.*?(?=\s|$)', content)
         ppt_link = ppt_link_match.group(0) if ppt_link_match else None
         
         image_folder_match = re.search(r'(https://drive\.google\.com/drive/folders/[a-zA-Z0-9_-]+)', content)
@@ -81,10 +81,10 @@ class ContentProcessor:
         return ContentMetadata(
             document_name=document_name,
             gpt_canvas=gpt_canvas,
-            gpt_canvas_without_speaker_notes=gpt_canvas_without_notes,
+            #gpt_canvas_without_speaker_notes=gpt_canvas_without_notes,
             ppt_needs_images=ppt_needs_images,
             ppt_has_images=ppt_has_images,
-            ppt_with_speaker_notes=ppt_with_speaker_notes,
+            #ppt_with_speaker_notes=ppt_with_speaker_notes,
             gpt_canvas_link=canvas_link,
             ppt_drive_link=ppt_link,
             image_folder_link=image_folder_link,
