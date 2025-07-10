@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import logging
 from script import CanvasConverter
-from generate_json_from_doc_mappings import extract_mappings_from_docx, save_to_json
+from generate_json_from_doc_mappings import generate_json_from_docx
 from image_auto import PPTImageInserter
 from pathlib import Path
 from pydrive.auth import GoogleAuth
@@ -22,10 +22,10 @@ class ContentMetadata:
     """Data class to store content metadata"""
     document_name: str
     gpt_canvas: bool
-    gpt_canvas_without_speaker_notes: bool
+    #gpt_canvas_without_speaker_notes: bool
     ppt_needs_images: bool
     ppt_has_images: bool
-    ppt_with_speaker_notes: bool
+    #ppt_with_speaker_notes: bool
     gpt_canvas_link: Optional[str] = None
     ppt_drive_link: Optional[str] = None
     image_folder_link: Optional[str] = None
@@ -35,23 +35,25 @@ class ContentMetadata:
 
 class ContentProcessor:
     """Main driver class for content processing automation"""
-    
-    def __init__(self, output_dir: str = "output"):
+
+    def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
         
         # Initialize component modules (these would be your actual scripts)
-        self.canvas_to_ppt_converter = CanvasToPPTConverter()
+        self.canvas_to_ppt_converter = CanvasToPPTConverter(output_dir=self.output_dir)
         self.image_inserter = ImageInserter()
         self.json_mapping_generator = JSONMappingGenerator()
-        self.drive_handler = DriveHandler()
+        self.drive_handler = DriveHandler(output_dir=self.output_dir)
+
         
     def parse_metadata(self, content: str) -> ContentMetadata:
         """Parse metadata from the document content"""
         logger.info("Parsing metadata from content...")
         
         # Extract document name
-        doc_name_match = re.search(r'\*\*Document Name\*\*\s*:\s*(.+)', content)
+        doc_name_match = re.search(r'Document\s*Name\s*:\s*(\S+)', content, re.IGNORECASE)
         document_name = doc_name_match.group(1).strip() if doc_name_match else "unknown"
         
         # Extract Y/N flags
@@ -59,11 +61,9 @@ class ContentProcessor:
             match = re.search(pattern, content, re.IGNORECASE)
             return match.group(1).strip().upper() == 'Y' if match else False
         
-        gpt_canvas = extract_flag(r'\*\*Gpt canvas\*\*.*?([YN])')
-        #gpt_canvas_without_notes = extract_flag(r'\*\*Gpt canvas without.*?speaker notes\*\*.*?([YN])')
-        ppt_needs_images = extract_flag(r'\*\*Ppt needs images\*\*.*?([YN])')
-        ppt_has_images = extract_flag(r'\*\*PPT has images\*\*.*?([YN])')
-        #ppt_with_speaker_notes = extract_flag(r'\*\*Ppt with speaker notes\*\*.*?([YN])')
+        gpt_canvas = extract_flag(r'GPT canvas\s*:\s*([YN])')
+        ppt_needs_images = extract_flag(r'PPT needs images\s*:\s*([YN])')
+        ppt_has_images = extract_flag(r'PPT has images\s*:\s*([YN])')
         
         # Extract links
         canvas_link_match = re.search(r'https://chatgpt\.com/canvas/shared/[a-zA-Z0-9]+', content)
@@ -137,7 +137,7 @@ class ContentProcessor:
             return results
         
         # Generate final JSON mapping if needed
-        mapping_path = f"output/{metadata.document_name}_mapping.json"
+        mapping_path = self.output_dir / f"{metadata.document_name}_mapping.json"
         if metadata.ppt_needs_images and not Path(mapping_path).exists():
             self._generate_json_mapping(metadata, results)
 
@@ -164,8 +164,7 @@ class ContentProcessor:
         
         # Step 2: Convert Canvas to PPT
         ppt_path = self.canvas_to_ppt_converter.convert(
-        canvas_link=metadata.gpt_canvas_link,
-        include_speaker_notes=not metadata.gpt_canvas_without_speaker_notes
+        canvas_link=metadata.gpt_canvas_link
     )
         results["ppt_generated"] = str(ppt_path)
         results["processing_steps"].append("Canvas converted to PPT")
@@ -203,7 +202,7 @@ class ContentProcessor:
         results = {"processing_steps": []}  # ✅ Fixed: Initialize processing_steps
         
         # Generate JSON mapping FIRST (before downloading images)
-        mapping_file = f"output/{metadata.document_name}_mapping.json"
+        mapping_file = self.output_dir / f"{metadata.document_name}_mapping.json"
         if not Path(mapping_file).exists():
             self._generate_json_mapping(metadata, results)
         
@@ -236,7 +235,7 @@ class ContentProcessor:
         logger.info("Generating JSON mapping...")
         
         # Generate and save the mapping JSON
-        output_file = f"output/{metadata.document_name}_mapping.json"
+        output_file = self.output_dir / f"{metadata.document_name}_mapping.json"
         json_path = self.json_mapping_generator.generate(metadata, output_file=output_file)
         results["json_mapping_generated"] = str(json_path)
         metadata.image_mapping_file = str(json_path)
@@ -255,14 +254,15 @@ class ContentProcessor:
 class CanvasToPPTConverter:
     """Wrapper to use the CanvasConverter from script.py"""
 
-    def __init__(self):
+    def __init__(self, output_dir: Path):
         self.converter = CanvasConverter()
+        self.output_dir = output_dir
 
-    def convert(self, canvas_link: str, include_speaker_notes: bool = True) -> Path:
+    def convert(self, canvas_link: str) -> Path:
         # Output dir can be fixed or dynamic
         ppt_path = self.converter.convert(
             url=canvas_link,
-            output_dir="output"
+            output_dir=self.output_dir,
         )
         return ppt_path
 
@@ -286,7 +286,7 @@ class ImageInserter:
             mapping_file = str(ppt_path.parent / "mapping.json")
         
         # Generate output filename
-        output_file = str(ppt_path.parent / f"with_images_{ppt_path.name}")
+        output_file = str(ppt_path.parent / ppt_path.name)
         
         print(f"📌 Starting image insertion using: {mapping_file}")
         print(f"📌 Image directory: {image_dir}")
@@ -317,59 +317,29 @@ class JSONMappingGenerator:
     """Generates JSON mapping file for image insertion"""
 
     def generate(self, metadata, output_file="mapping.json") -> Path:
-        """Generate JSON mapping based on text slide-to-image mapping in the .docx"""
-
-        # Use document name to find the docx
+        """Use enhanced generator with collision detection"""
         docx_path = f"{metadata.document_name}.docx"
         if not os.path.exists(docx_path):
             raise FileNotFoundError(f"Document file not found: {docx_path}")
-
-        print(f"📄 Generating JSON mapping from: {docx_path}")
-        mappings = extract_mappings_from_docx(docx_path)
         
-        # ✅ Convert slide-based mappings to image-based mappings for PPTImageInserter
-        image_mappings = self._convert_to_image_mappings(mappings)
-        
-        # Save in the format expected by PPTImageInserter
-        save_to_json(image_mappings, output_file)
-        return Path(output_file)
+        print(f"📄 Generating JSON mapping with enhanced logic from: {docx_path}")
+        json_path = generate_json_from_docx(
+            docx_path=docx_path,
+            output_file=output_file,
+            default_width=3.5,
+            default_height=2.0
+        )
+        return Path(json_path)
     
-    def _convert_to_image_mappings(self, slide_mappings: Dict[str, List[str]]) -> List[Dict]:
-        """
-        ✅ Convert slide-based mappings to image-based mappings expected by PPTImageInserter
-        
-        Input format (from docx): {"slide_1": ["image1.jpg", "image2.jpg"], "slide_2": ["image3.jpg"]}
-        Output format (for PPTImageInserter): [{"image_number": 1, "slide_number": 1, "position": "center"}, ...]
-        """
-        image_mappings = []
-        image_counter = 1
-        
-        for slide_key, image_names in slide_mappings.items():
-            # Extract slide number from key like "slide_1"
-            slide_num = int(slide_key.split('_')[1])
-            
-            for image_name in image_names:
-                mapping = {
-                    "image_number": image_counter,
-                    "slide_number": slide_num,
-                    "position": "center",  # Default position
-                    "left": None,
-                    "top": None,
-                    "width": 6.0,  # Default width in inches
-                    "height": 4.0  # Default height in inches
-                }
-                image_mappings.append(mapping)
-                image_counter += 1
-        
-        return image_mappings
-
+    
 class DriveHandler:
     """Handles Google Drive operations using PyDrive"""
 
-    def __init__(self):
+    def __init__(self, output_dir: Path):
         self.gauth = GoogleAuth()
         self.gauth.LocalWebserverAuth()  # Will open browser on first run
         self.drive = GoogleDrive(self.gauth)
+        self.output_dir = output_dir
 
     def extract_file_id(self, url: str) -> str:
         # Try /d/<id> (file link)
@@ -389,7 +359,7 @@ class DriveHandler:
 
         file = self.drive.CreateFile({'id': file_id})
         file_name = file['title']
-        out_path = Path("output") / file_name
+        out_path = self.output_dir / file_name
         file.GetContentFile(str(out_path))
         logger.info(f"📥 Downloaded PPT to: {out_path}")
         return out_path
@@ -403,7 +373,7 @@ class DriveHandler:
             'q': f"'{folder_id}' in parents and trashed=false"
         }).GetList()
 
-        output_dir = Path("output")
+        output_dir = self.output_dir
         image_paths = []
 
         for file in file_list:
@@ -424,19 +394,21 @@ class DriveHandler:
 # Usage example
 def read_docx_text(path: str) -> str:
     doc = Document(path)
-    return "\n".join([p.text for p in doc.paragraphs])
-
+    return "\n".join([p.text.strip() for p in doc.paragraphs if p.text.strip()])
 def main():
-    import sys
-    if len(sys.argv) < 2:
-        print("❌ Please provide path to metadata .docx file.\nUsage: python driver.py <metadata_file.docx>")
-        return
     
-    metadata_path = sys.argv[1]
+    metadata_path = input("📄 Enter path to metadata .docx file: ").strip()
+    if not metadata_path or not os.path.exists(metadata_path):
+        print("❌ Invalid or missing file. Please ensure the file exists.")
+        return
     
     try:
         content_text = read_docx_text(metadata_path)
-        processor = ContentProcessor()
+        # Dynamically name the output directory based on metadata filename (without .docx)
+        from pathlib import Path
+        output_folder_name = Path(metadata_path).stem
+        processor = ContentProcessor(output_dir=f"output/{output_folder_name}")
+
         results = processor.process_content(content_text)
         print("\n✅ Processing complete.\n")
         print(json.dumps(results, indent=2))

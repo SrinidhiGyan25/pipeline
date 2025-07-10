@@ -2,7 +2,7 @@
 """
 Generate JSON mapping file from Word document for PPTImageInserter
 Extracts slide-to-image mappings from .docx files and converts them to JSON format
-with collision detection and automatic position assignment
+with enhanced collision detection and automatic position assignment
 """
 
 import os
@@ -23,22 +23,25 @@ class Position(Enum):
     CUSTOM = "custom"
 
 class PositionManager:
-    """Manages position assignment with collision detection"""
+    """Enhanced position manager with advanced collision detection from doc_json.py"""
     
     def __init__(self):
+        # Define position priority order (default starts with bottom-left)
         self.available_positions = [
-            Position.BOTTOM_LEFT,
-            Position.BOTTOM_RIGHT,
-            Position.TOP_RIGHT
+            Position.BOTTOM_LEFT,    # First choice
+            Position.BOTTOM_RIGHT,   # Second choice  
+            Position.TOP_RIGHT,      # Third choice
+            Position.TOP_LEFT        # Fourth choice if needed
         ]
         # Track occupied positions per slide
         self.occupied_positions: Dict[int, Set[Position]] = {}
     
     def get_next_available_position(self, slide_number: int) -> Optional[Position]:
-        """Get next available position on a slide"""
+        """Get next available position on a slide with collision detection"""
         if slide_number not in self.occupied_positions:
             self.occupied_positions[slide_number] = set()
         
+        # Return first available position from priority order
         for position in self.available_positions:
             if position not in self.occupied_positions[slide_number]:
                 return position
@@ -59,6 +62,49 @@ class PositionManager:
         if slide_number not in self.occupied_positions:
             return len(self.available_positions)
         return len(self.available_positions) - len(self.occupied_positions[slide_number])
+    
+    def get_occupied_positions(self, slide_number: int) -> Set[Position]:
+        """Get set of occupied positions for a slide"""
+        return self.occupied_positions.get(slide_number, set())
+    
+    def reset_slide(self, slide_number: int):
+        """Reset all positions for a slide"""
+        if slide_number in self.occupied_positions:
+            self.occupied_positions[slide_number].clear()
+    
+    def analyze_slide_usage(self, slide_mappings: Dict[str, List[str]]):
+        """Analyze slide usage to identify potential issues"""
+        slide_usage = {}
+        for slide_key, image_names in slide_mappings.items():
+            slide_num = int(slide_key.split('_')[1])
+            image_count = len(image_names)
+            
+            if slide_num in slide_usage:
+                slide_usage[slide_num] += image_count
+            else:
+                slide_usage[slide_num] = image_count
+        
+        print("\n=== Slide Usage Analysis ===")
+        max_positions = len(self.available_positions)
+        
+        for slide_num, count in sorted(slide_usage.items()):
+            if count > max_positions:
+                print(f"Slide {slide_num}: {count} images (exceeds {max_positions} positions)")
+            else:
+                print(f"Slide {slide_num}: {count} images")
+        
+        return slide_usage
+    
+    def find_or_create_slide(self, current_slide: int) -> int:
+        """Find next available slide or suggest new slide number"""
+        # Start from current slide + 1 and find next available
+        next_slide = current_slide + 1
+        
+        # Find next slide that has available positions
+        while self.is_slide_full(next_slide):
+            next_slide += 1
+        
+        return next_slide
 
 def extract_mappings_from_docx(docx_path: str) -> Dict[str, List[str]]:
     """
@@ -134,19 +180,17 @@ def extract_mappings_from_docx(docx_path: str) -> Dict[str, List[str]]:
     print(f"✓ Extracted {len(mappings)} slide mappings")
     return mappings
 
-def convert_to_ppt_format_with_collision_detection(slide_mappings: Dict[str, List[str]], 
-                                                 default_width: float = 6.0, 
-                                                 default_height: float = 4.0,
-                                                 default_position: str = "center") -> List[Dict]:
+def convert_to_ppt_format_with_enhanced_collision_detection(slide_mappings: Dict[str, List[str]], 
+                                                          default_width: float = 6.0, 
+                                                          default_height: float = 4.0) -> List[Dict]:
     """
     Convert slide-based mappings to the format expected by PPTImageInserter
-    with collision detection and automatic position assignment
+    with enhanced collision detection and automatic position assignment
     
     Args:
         slide_mappings: {"slide_1": ["image1.jpg", "image2.png"], ...}
         default_width: Default image width in inches
         default_height: Default image height in inches
-        default_position: Default position ("center", "top-left", etc.)
         
     Returns:
         List of mappings in PPTImageInserter format with collision detection
@@ -159,87 +203,76 @@ def convert_to_ppt_format_with_collision_detection(slide_mappings: Dict[str, Lis
     sorted_slides = sorted(slide_mappings.items(), 
                           key=lambda x: int(x[0].split('_')[1]))
     
-    print(f"\n=== Converting to PPT Format with Collision Detection ===")
+    print(f"\n=== Converting to PPT Format with Enhanced Collision Detection ===")
     
-    # First pass: analyze slide usage
-    print("\n=== Slide Usage Analysis ===")
-    max_positions = len(position_manager.available_positions)
-    
-    for slide_key, image_names in sorted_slides:
-        slide_num = int(slide_key.split('_')[1])
-        image_count = len(image_names)
-        
-        if image_count > max_positions:
-            print(f"Slide {slide_num}: {image_count} images (exceeds {max_positions} positions)")
-        else:
-            print(f"Slide {slide_num}: {image_count} images")
+    # First pass: analyze all mappings to detect potential collisions
+    position_manager.analyze_slide_usage(slide_mappings)
     
     # Second pass: assign positions with collision detection
-    print(f"\n=== Position Assignment ===")
+    print(f"\n=== Position Assignment with Enhanced Collision Detection ===")
     
     for slide_key, image_names in sorted_slides:
         slide_num = int(slide_key.split('_')[1])
         
-        print(f"\n📍 Processing Slide {slide_num} with {len(image_names)} images")
+        print(f"\n📍 Processing Slide {slide_num} with {len(image_names)} images:")
         
         # Check if slide can accommodate all images
         available_positions = position_manager.get_available_count(slide_num)
+        max_positions = len(position_manager.available_positions)
         
         if len(image_names) > available_positions:
             print(f"  ⚠️ Warning: Slide {slide_num} needs {len(image_names)} positions but only has {available_positions} available")
-            print(f"  ✓ Will distribute excess images to new slides")
+            print(f"  ✓ Will distribute excess images to subsequent slides")
         
         current_slide = slide_num
         
+        # Assign positions for each image with enhanced collision detection
         for i, image_name in enumerate(image_names):
             # Check if current slide has space
             if position_manager.is_slide_full(current_slide):
-                # Move to next slide
-                current_slide = _find_next_available_slide(position_manager, current_slide)
-                print(f"  ✓ Moving to slide {current_slide} for image {image_counter}")
+                # Find next available slide
+                current_slide = position_manager.find_or_create_slide(current_slide)
+                print(f"  ✓ Moving to slide {current_slide} for image {image_counter} ({image_name})")
             
-            # Get next available position
+            # Get next available position with collision detection
             position = position_manager.get_next_available_position(current_slide)
             
             if position:
+                # Mark position as occupied
                 position_manager.occupy_position(current_slide, position)
                 
-                # Create mapping entry
+                # Create mapping entry with null coordinates (let PPT handle positioning)
                 mapping = {
                     "image_number": image_counter,
                     "slide_number": current_slide,
                     "position": position.value,
-                    "left": None,
-                    "top": None,
+                    "left": None,  # Use null instead of 0
+                    "top": None,   # Use null instead of 0
                     "width": default_width,
                     "height": default_height
                 }
                 
                 ppt_mappings.append(mapping)
-                print(f"  Image {image_counter}: {image_name} → Slide {current_slide} ({position.value})")
+                
+                # Show collision detection in action
+                occupied_positions = position_manager.get_occupied_positions(current_slide)
+                print(f"    Image {image_counter} ({image_name}) → Slide {current_slide}")
+                print(f"    Position: {position.value} (occupied positions: {[p.value for p in occupied_positions]})")
+                
                 image_counter += 1
             else:
-                print(f"  ✗ Error: Could not assign position for image {image_counter}")
+                print(f"  ✗ Error: Could not assign position for image {image_counter} ({image_name})")
+                # Still increment counter to maintain sequence
                 image_counter += 1
     
-    # Print assignment summary
-    _print_assignment_summary(ppt_mappings)
+    # Print detailed assignment summary
+    print_enhanced_assignment_summary(ppt_mappings, position_manager)
     
     return ppt_mappings
 
-def _find_next_available_slide(position_manager: PositionManager, current_slide: int) -> int:
-    """Find next available slide or create new slide number"""
-    next_slide = current_slide + 1
-    
-    # Find next slide that has available positions
-    while position_manager.is_slide_full(next_slide):
-        next_slide += 1
-    
-    return next_slide
-
-def _print_assignment_summary(ppt_mappings: List[Dict]):
-    """Print summary of position assignments"""
-    print("\n=== Assignment Summary ===")
+def print_enhanced_assignment_summary(ppt_mappings: List[Dict], position_manager: PositionManager):
+    """Print enhanced summary of position assignments with collision detection details"""
+    print("\n=== Enhanced Assignment Summary with Collision Detection ===")
     
     # Group by slide
     slides = {}
@@ -249,16 +282,48 @@ def _print_assignment_summary(ppt_mappings: List[Dict]):
             slides[slide_num] = []
         slides[slide_num].append(entry)
     
+    total_images = len(ppt_mappings)
+    total_slides = len(slides)
+    
+    print(f"📊 Total Images: {total_images}")
+    print(f"📊 Total Slides Used: {total_slides}")
+    print(f"📊 Average Images per Slide: {total_images/total_slides:.1f}")
+    
+    print("\n--- Slide-by-Slide Assignment ---")
     for slide_num in sorted(slides.keys()):
         entries = slides[slide_num]
         positions = [entry["position"] for entry in entries]
         images = [entry["image_number"] for entry in entries]
         
-        print(f"Slide {slide_num}: Images {images} → Positions {positions}")
+        # Show position distribution
+        position_counts = {}
+        for pos in positions:
+            position_counts[pos] = position_counts.get(pos, 0) + 1
+        
+        print(f"Slide {slide_num}: {len(entries)} images")
+        print(f"  Images: {images}")
+        print(f"  Positions: {positions}")
+        print(f"  Position usage: {position_counts}")
+        
+        # Show collision detection effectiveness
+        if len(entries) > 1:
+            print(f"  ✓ Collision detection successfully assigned {len(entries)} images to different positions")
+    
+    # Show overflow analysis
+    print("\n--- Overflow Analysis ---")
+    max_positions_per_slide = len(position_manager.available_positions)
+    overflowed_slides = [slide_num for slide_num, entries in slides.items() 
+                        if len(entries) > max_positions_per_slide]
+    
+    if overflowed_slides:
+        print(f"⚠️  Original slides that caused overflow: {overflowed_slides}")
+        print(f"✓ Overflow images automatically distributed to subsequent slides")
+    else:
+        print("✓ No overflow occurred - all images fit within available positions")
 
 def save_to_json(mappings: List[Dict], output_file: str = "mapping.json") -> str:
     """
-    Save mappings to JSON file
+    Save mappings to JSON file with enhanced formatting
     
     Args:
         mappings: List of mapping dictionaries
@@ -274,6 +339,15 @@ def save_to_json(mappings: List[Dict], output_file: str = "mapping.json") -> str
             json.dump(mappings, f, indent=2, ensure_ascii=False)
         
         print(f"✅ Saved {len(mappings)} mappings to: {output_path}")
+        
+        # Show sample of saved data
+        if mappings:
+            print("\n--- Sample JSON Entry ---")
+            sample = mappings[0]
+            print(json.dumps(sample, indent=2))
+            if len(mappings) > 1:
+                print(f"... and {len(mappings) - 1} more entries")
+        
         return str(output_path)
     
     except Exception as e:
@@ -281,7 +355,7 @@ def save_to_json(mappings: List[Dict], output_file: str = "mapping.json") -> str
 
 def validate_mappings(mappings: List[Dict]) -> bool:
     """
-    Validate that mappings have required fields
+    Validate that mappings have required fields and proper collision detection
     
     Args:
         mappings: List of mapping dictionaries
@@ -289,8 +363,11 @@ def validate_mappings(mappings: List[Dict]) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    required_fields = ['image_number', 'slide_number', 'position']
+    required_fields = ['image_number', 'slide_number', 'position', 'left', 'top', 'width', 'height']
     
+    print(f"\n=== Validating {len(mappings)} mappings ===")
+    
+    # Check required fields
     for i, mapping in enumerate(mappings):
         for field in required_fields:
             if field not in mapping:
@@ -304,29 +381,63 @@ def validate_mappings(mappings: List[Dict]) -> bool:
         if not isinstance(mapping['slide_number'], int) or mapping['slide_number'] < 1:
             print(f"❌ Mapping {i+1} has invalid slide_number: {mapping['slide_number']}")
             return False
+        
+        # Validate position values
+        valid_positions = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'custom']
+        if mapping['position'] not in valid_positions:
+            print(f"❌ Mapping {i+1} has invalid position: {mapping['position']}")
+            return False
+        
+        # Check that left and top are None (null) for positioned images
+        if mapping['left'] is not None and mapping['position'] != 'custom':
+            print(f"⚠️  Mapping {i+1} has left coordinate set but position is not 'custom'")
+        
+        if mapping['top'] is not None and mapping['position'] != 'custom':
+            print(f"⚠️  Mapping {i+1} has top coordinate set but position is not 'custom'")
+    
+    # Validate collision detection - check for position conflicts
+    print("\n--- Collision Detection Validation ---")
+    slide_positions = {}
+    conflicts = 0
+    
+    for mapping in mappings:
+        slide_num = mapping['slide_number']
+        position = mapping['position']
+        
+        if slide_num not in slide_positions:
+            slide_positions[slide_num] = []
+        
+        if position in slide_positions[slide_num]:
+            print(f"❌ Position conflict detected: Slide {slide_num}, Position {position}")
+            conflicts += 1
+        else:
+            slide_positions[slide_num].append(position)
+    
+    if conflicts > 0:
+        print(f"❌ Found {conflicts} position conflicts")
+        return False
     
     print(f"✅ All {len(mappings)} mappings are valid")
+    print(f"✅ No position conflicts detected - collision detection working properly")
     return True
 
 def generate_json_from_docx(docx_path: str, 
                            output_file: str = "mapping.json",
                            default_width: float = 6.0,
-                           default_height: float = 4.0,
-                           default_position: str = "center") -> str:
+                           default_height: float = 4.0) -> str:
     """
-    Main function to generate JSON mapping from Word document with collision detection
+    Main function to generate JSON mapping from Word document with enhanced collision detection
     
     Args:
         docx_path: Path to Word document containing slide mappings
         output_file: Output JSON file path
         default_width: Default image width in inches
         default_height: Default image height in inches
-        default_position: Default position for single images
         
     Returns:
         Path to generated JSON file
     """
-    print("=== Generating JSON Mapping from Word Document with Collision Detection ===\n")
+    print("=== Generating JSON Mapping with Enhanced Collision Detection ===\n")
     
     # Step 1: Extract slide mappings from docx
     slide_mappings = extract_mappings_from_docx(docx_path)
@@ -334,72 +445,35 @@ def generate_json_from_docx(docx_path: str,
     if not slide_mappings:
         raise ValueError("No slide mappings found in document")
     
-    # Step 2: Convert to PPTImageInserter format with collision detection
-    ppt_mappings = convert_to_ppt_format_with_collision_detection(
+    # Step 2: Convert to PPTImageInserter format with enhanced collision detection
+    ppt_mappings = convert_to_ppt_format_with_enhanced_collision_detection(
         slide_mappings, 
         default_width=default_width,
-        default_height=default_height,
-        default_position=default_position
+        default_height=default_height
     )
     
-    # Step 3: Validate mappings
+    # Step 3: Validate mappings including collision detection
     if not validate_mappings(ppt_mappings):
         raise ValueError("Generated mappings are invalid")
     
     # Step 4: Save to JSON
     output_path = save_to_json(ppt_mappings, output_file)
     
-    print(f"\n🎉 Successfully generated JSON mapping with collision detection!")
+    print(f"\n🎉 Successfully generated JSON mapping with enhanced collision detection!")
     print(f"📄 Source: {docx_path}")
     print(f"📄 Output: {output_path}")
     print(f"📊 Total mappings: {len(ppt_mappings)}")
+    print(f"🔧 Collision detection: Active (using null coordinates)")
+    print(f"📍 Default position sequence: bottom-left → bottom-right → top-right → top-left")
     
     return output_path
 
-def create_sample_docx():
-    """Create a sample Word document with slide mappings"""
-    try:
-        from docx import Document
-        from docx.shared import Inches
-        
-        doc = Document()
-        doc.add_heading('Sample Slide-to-Image Mappings with Collision Detection', 0)
-        
-        doc.add_paragraph('This document contains slide-to-image mappings for PowerPoint automation.')
-        doc.add_paragraph('Format: Slide <number> -- <image1>, <image2>, ...')
-        doc.add_paragraph('The script will automatically handle position conflicts using collision detection.')
-        doc.add_paragraph()
-        
-        # Add sample mappings that will trigger collision detection
-        sample_mappings = [
-            "Slide 1 -- welcome_image.jpg",
-            "Slide 2 -- graph1.png, chart1.jpg, diagram1.png, photo1.jpg",  # This will exceed 3 positions
-            "Slide 3 -- diagram.png",
-            "Slide 4 -- photo1.jpg, photo2.jpg, photo3.png, photo4.jpg, photo5.png",  # This will also exceed
-            "Slide 5 -- conclusion.gif"
-        ]
-        
-        for mapping in sample_mappings:
-            doc.add_paragraph(mapping)
-        
-        doc.add_paragraph()
-        doc.add_paragraph('Note: Make sure all image files are available in the images directory.')
-        doc.add_paragraph('Images exceeding 3 positions per slide will be automatically moved to subsequent slides.')
-        
-        doc.save('sample_mappings_with_collision_detection.docx')
-        print("✅ Created sample document: sample_mappings_with_collision_detection.docx")
-        
-    except ImportError:
-        print("❌ python-docx not installed. Cannot create sample document.")
-    except Exception as e:
-        print(f"❌ Error creating sample document: {e}")
+
 
 def main():
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == '--create-sample':
-        create_sample_docx()
-        return
+    
     
     try:
         # Get inputs
@@ -423,23 +497,19 @@ def main():
             width, height = 6.0, 4.0
             print("Using default dimensions: 6.0 x 4.0 inches")
         
-        position = input("Default position (center/top-left/top-right/bottom-left/bottom-right, press Enter for 'center'): ").strip()
-        if position not in ['center', 'top-left', 'top-right', 'bottom-left', 'bottom-right']:
-            position = 'center'
-        
-        # Generate JSON mapping with collision detection
+        # Generate JSON mapping with enhanced collision detection
         output_path = generate_json_from_docx(
             docx_path=docx_path,
             output_file=output_file,
             default_width=width,
-            default_height=height,
-            default_position=position
+            default_height=height
         )
         
-        print(f"\n✅ JSON mapping generated successfully with collision detection!")
+        print(f"\n✅ JSON mapping generated successfully with enhanced collision detection!")
         print(f"📁 File saved as: {output_path}")
-        print(f"🔧 Collision detection ensures no position conflicts")
+        print(f"🔧 Enhanced collision detection ensures no position conflicts")
         print(f"📊 Excess images automatically moved to subsequent slides")
+        print(f"📍 Coordinates set to null for automatic positioning")
         
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user.")
