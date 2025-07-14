@@ -512,8 +512,32 @@ class PowerPointGenerator:
             self._set_default_fonts(prs)
 
             # Add title slide
-            if title:
-                self._add_title_slide(prs, title)
+            # Manually extract first heading/subheading/speaker notes
+            elements = content_div.find_all(["h1", "h2", "p"], recursive=True)
+            heading = None
+            subheading = None
+            speaker_notes = None
+            
+            for i, el in enumerate(elements):
+                text = el.get_text(strip=True)
+                if "Speaker notes:" in text:
+                    _, notes = re.split(r"Speaker notes\s*:\s*", text, flags=re.IGNORECASE, maxsplit=1)
+                    speaker_notes = notes.strip()
+                    elements[i].decompose()
+                    continue
+            
+                if not heading:
+                    heading = text
+                    elements[i].decompose()
+                elif not subheading:
+                    subheading = text
+                    elements[i].decompose()
+                if heading and subheading:
+                    break
+            
+            # Add custom title slide
+            self.add_custom_title_slide(prs, heading or " ", subheading or " ", speaker_notes or "")
+
             
             # Process content elements
             self._process_content_elements(prs, content_div)
@@ -535,20 +559,27 @@ class PowerPointGenerator:
         except Exception as e:
             self.logger.error(f"PowerPoint generation failed: {e}")
             return False
-    
-    def _add_title_slide(self, prs: Presentation, title: str) -> None:
-        """Add professional title slide"""
+    def add_custom_title_slide(self, prs: Presentation, heading: str, subheading: str, speaker_notes: str) -> None:
         try:
             title_slide_layout = prs.slide_layouts[0]  # Title Slide layout
             slide = prs.slides.add_slide(title_slide_layout)
-            
-            slide.shapes.title.text = title
+    
+            slide.shapes.title.text = heading or ""
             if len(slide.placeholders) > 1:
-                slide.placeholders[1].text = f" "
-            
+                slide.placeholders[1].text = subheading or ""
+    
+            # Add speaker notes
+            if speaker_notes:
+                notes_slide = slide.notes_slide
+                notes_slide.notes_text_frame.text = speaker_notes.strip()
+                self.speaker_notes_txt.append((1, speaker_notes.strip()))
+                self.notes_seen.add((1, speaker_notes.strip()))
+    
             self.slide_count += 1
         except Exception as e:
-            self.logger.warning(f"Failed to add title slide: {e}")
+            self.logger.warning(f"Failed to add custom title slide: {e}")
+
+    
     
     def _process_content_elements(self, prs: Presentation, content_div: Tag) -> None:
         """Process all content elements with enhanced handling"""
@@ -596,32 +627,7 @@ class PowerPointGenerator:
                     continue
                 else:
                     continue
-    
-            # Handle image descriptions
-            if "image:" in element_text.lower():
-                content_part, image_part = re.split(r'image\s*:\s*', element_text, flags=re.IGNORECASE, maxsplit=1)
-
-                # Store image description with current slide number if unique
-                if image_part.strip():
-                    desc = image_part.strip()
-                    slide_no = self.slide_count + 1
-                    if not any(d['slide_number'] == slide_no and d['description'] == desc for d in self.image_descriptions):
-                        self.image_descriptions.append({
-                            'slide_number': slide_no,  # Next slide number
-                            'description': desc
-                        })
-                
-                # Mark as processed
-                processed_elements.add(element_id)
-                
-                # Continue processing the content part if it exists
-                if content_part.strip():
-                    # For now, skip further processing to avoid duplication
-                    # You could create a new element here if needed
-                    continue
-                else:
-                    continue
-    
+            
             # Handle consecutive cm-line blocks as one code block
             if element.name == "div" and "cm-line" in element.get("class", []):
                 print(f"[DEBUG] Detected cm-line: {element.get_text(strip=True)}")
@@ -767,7 +773,11 @@ class PowerPointGenerator:
                     para = content_box.text_frame.add_paragraph()
                     para.text = text
                     para.level = min(level, max_level)
-                    
+                    para.space_before = Pt(0)
+                    para.space_after = Pt(0)
+                    para.margin_left = Pt(0)
+                    para.left_indent = Pt(0)
+
                     self._set_font_safely(para, text, 'default')
                 
                 # Process nested lists
@@ -794,7 +804,7 @@ class PowerPointGenerator:
             
             # Table dimensions and positioning
             left = Inches(0.5)
-            top = Inches(3.5)  # Position below title or existing content
+            top = Inches(1.77)  # Position below title or existing content
             width = Inches(9)
             height = Inches(min(5.5, 0.5 + 0.4 * num_rows))
             
@@ -1043,7 +1053,7 @@ class CanvasConverter:
             
             # Step 4: Create PowerPoint
             self.logger.info("🖼️  Generating PowerPoint presentation...")
-            title = self._extract_title(soup)
+            title = None
             
             success = self.ppt_generator.create_enhanced_presentation(
                 processed_content, output_path, title
