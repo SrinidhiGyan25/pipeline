@@ -499,7 +499,6 @@ class PowerPointGenerator:
     def __init__(self, config: Config, logger: logging.Logger):
         self.speaker_notes_txt = [] 
         self.notes_seen = set()
-        self.image_descriptions = []  # ADD THIS LINE
         self.config = config
         self.logger = logger
         self.slide_count = 0
@@ -514,27 +513,38 @@ class PowerPointGenerator:
             # Add title slide
             # Manually extract first heading/subheading/speaker notes
             elements = content_div.find_all(["h1", "h2", "p"], recursive=True)
+            for el in elements:
+                if el.name == "p" and re.search(r"speaker notes\s*:", el.get_text(), flags=re.IGNORECASE):
+                    break  # Prevents same speaker note being parsed again later
             heading = None
             subheading = None
             speaker_notes = None
             
             for i, el in enumerate(elements):
                 text = el.get_text(strip=True)
-                if "Speaker notes:" in text:
-                    _, notes = re.split(r"Speaker notes\s*:\s*", text, flags=re.IGNORECASE, maxsplit=1)
+            
+                # Remove "Slide x:" prefix if present
+                text = re.sub(r'^slide\s*\d+\s*:\s*', '', text, flags=re.IGNORECASE)
+            
+                # Detect speaker notes first
+                if re.search(r"speaker notes\s*:\s*", text, flags=re.IGNORECASE):
+                    _, notes = re.split(r"speaker notes\s*:\s*", text, flags=re.IGNORECASE, maxsplit=1)
                     speaker_notes = notes.strip()
-                    elements[i].decompose()
+                    el.decompose()
                     continue
             
+                # Assign heading and subheading next
                 if not heading:
                     heading = text
                     elements[i].decompose()
                 elif not subheading:
                     subheading = text
                     elements[i].decompose()
-                if heading and subheading:
-                    break
             
+                # Once both are found, break
+                if heading and subheading and speaker_notes:
+                    break
+                        
             # Add custom title slide
             self.add_custom_title_slide(prs, heading or " ", subheading or " ", speaker_notes or "")
 
@@ -572,9 +582,11 @@ class PowerPointGenerator:
             if speaker_notes:
                 notes_slide = slide.notes_slide
                 notes_slide.notes_text_frame.text = speaker_notes.strip()
-                self.speaker_notes_txt.append((1, speaker_notes.strip()))
-                self.notes_seen.add((1, speaker_notes.strip()))
-    
+                slide_index = prs.slides.index(slide)
+                notes_key = (slide_index + 1, speaker_notes.strip())  # 1-based slide number
+                if notes_key not in self.notes_seen:
+                    self.notes_seen.add(notes_key)
+                    self.speaker_notes_txt.append(notes_key)
             self.slide_count += 1
         except Exception as e:
             self.logger.warning(f"Failed to add custom title slide: {e}")
@@ -603,30 +615,27 @@ class PowerPointGenerator:
                 continue
                 
             element_text = element.get_text(strip=True)
-            
+            print(f"[DEBUG] Element text: {repr(element_text)}")
+
             # Handle speaker notes
-            if "Speaker notes:" in element_text:
-                content_part, notes_part = re.split(r'Speaker notes\s*:\s*', element_text, flags=re.IGNORECASE, maxsplit=1)
-    
+            # Handle speaker notes
+            match = re.search(r"speaker notes\s*:\s*", element_text, flags=re.IGNORECASE)
+            if match:
+                content_part, notes_part = re.split(r"speaker notes\s*:\s*", element_text, flags=re.IGNORECASE, maxsplit=1)
+            
                 # If we have a current slide, add notes to it
                 if current_slide is not None:
                     slide = current_slide
                     notes_slide = slide.notes_slide
-                    notes_slide.notes_text_frame.text = notes_part.strip()
                     notes_key = (self.slide_count, notes_part.strip())
                     if notes_key not in self.notes_seen:
                         self.notes_seen.add(notes_key)
                         self.speaker_notes_txt.append(notes_key)
-                        notes_slide = slide.notes_slide
                         notes_slide.notes_text_frame.text = notes_part.strip()
-                # Mark as processed and continue with content part if it exists
+                
+                # Mark as processed and skip this element entirely
                 processed_elements.add(element_id)
-                if content_part.strip():
-                    # Create a new element with just the content part for further processing
-                    # But for now, we'll skip this element entirely after extracting notes
-                    continue
-                else:
-                    continue
+                continue  # Skip the rest of the processing for this element
             
             # Handle consecutive cm-line blocks as one code block
             if element.name == "div" and "cm-line" in element.get("class", []):
