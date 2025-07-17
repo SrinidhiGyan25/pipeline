@@ -31,6 +31,8 @@ class ContentMetadata:
     image_folder_link: Optional[str] = None
     image_mapping_file: Optional[str] = None
     image_mappings: Optional[Dict[str, List[str]]] = None
+    all_canvas_links: Optional[List[str]] = None
+
 
 
 class ContentProcessor:
@@ -66,8 +68,7 @@ class ContentProcessor:
         ppt_has_images = extract_flag(r'PPT has images\s*:\s*([YN])')
         
         # Extract links
-        canvas_link_match = re.search(r'https://chatgpt\.com/canvas/shared/[a-zA-Z0-9]+', content)
-        canvas_link = canvas_link_match.group(0) if canvas_link_match else None
+        canvas_links = re.findall(r'https://chatgpt\.com/canvas/shared/[a-zA-Z0-9]+', content)
         
         ppt_link_match = re.search(r'https://docs\.google\.com/.*?(?=\s|$)', content)
         ppt_link = ppt_link_match.group(0) if ppt_link_match else None
@@ -85,10 +86,11 @@ class ContentProcessor:
             ppt_needs_images=ppt_needs_images,
             ppt_has_images=ppt_has_images,
             #ppt_with_speaker_notes=ppt_with_speaker_notes,
-            gpt_canvas_link=canvas_link,
             ppt_drive_link=ppt_link,
             image_folder_link=image_folder_link,
-            image_mappings=image_mappings
+            image_mappings=image_mappings,
+            gpt_canvas_link=canvas_links[0] if canvas_links else None,
+            all_canvas_links=canvas_links
         )
     
     def _extract_image_mappings(self, content: str) -> Dict[str, List[str]]:
@@ -163,9 +165,25 @@ class ContentProcessor:
             return results
         
         # Step 2: Convert Canvas to PPT
-        ppt_path = self.canvas_to_ppt_converter.convert(
-        canvas_link=metadata.gpt_canvas_link
-    )
+        if metadata.all_canvas_links and len(metadata.all_canvas_links) > 1:
+            # Batch convert and merge
+            canvas_converter = CanvasConverter()
+            ppt_map = canvas_converter.batch_convert(metadata.all_canvas_links, output_dir=str(self.output_dir))
+            ppt_paths = [p for p in ppt_map.values() if p]
+            if not ppt_paths:
+                raise RuntimeError("No PPTs generated from batch conversion")
+            
+            # Merge all
+            from script import merge_presentations
+            merged_ppt_path = merge_presentations(ppt_paths[0], ppt_paths[1:])
+            ppt_path = merged_ppt_path
+            results["processing_steps"].append("Batch canvas converted and merged")
+        else:
+            # Single canvas
+            ppt_path = self.canvas_to_ppt_converter.convert(
+                canvas_link=metadata.gpt_canvas_link
+            )
+            results["processing_steps"].append("Canvas converted to PPT")
         results["ppt_generated"] = str(ppt_path)
         results["processing_steps"].append("Canvas converted to PPT")
         
